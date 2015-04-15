@@ -15,7 +15,8 @@ def bernstein_poly(i, n, t):
      The Bernstein polynomial of n, i as a function of t
     """
 
-    return scipy.misc.comb(n, i) * ( t**(n-i) ) * (1 - t)**i
+    # Note that i and (n-i) are swapped when compared to the SO post
+    return scipy.misc.comb(n, i) * (t**i) * (1 - t)**(n-i)
 
 
 def bezier_curve(points, nTimes=1000):
@@ -36,15 +37,18 @@ def bezier_curve(points, nTimes=1000):
     xPoints = np.array([p[0] for p in points])
     yPoints = np.array([p[1] for p in points])
 
+    # print("Evaluate bezier from %s,%s to %s,%s" %
+    #       (xPoints[0], yPoints[0], xPoints[-1], yPoints[-1]))
+
     t = np.linspace(0.0, 1.0, nTimes)
 
-    polynomial_array = np.array([ bernstein_poly(i, nPoints-1, t) for i in range(0, nPoints)   ])
+    polynomial_array = np.array(
+        [bernstein_poly(i, nPoints-1, t) for i in range(0, nPoints)])
 
     xvals = np.dot(xPoints, polynomial_array)
     yvals = np.dot(yPoints, polynomial_array)
 
     return xvals, yvals
-
 
 
 # http://stackoverflow.com/a/8405756/1570972
@@ -96,7 +100,7 @@ class Artist(object):
         self.x = x
         self.y = y
 
-    def wave_to(self, x, y):
+    def spline_wave_to(self, x, y):
         dx = x - self.x
         xc = self.x + dx / 2
         yc = self.y - dx / 2
@@ -107,6 +111,16 @@ class Artist(object):
         print('%g %g %g %g %g %g c' % (x1, y1, x2, y2, x3, y3))
         self.x = x3
         self.y = y3
+
+    def partial_curve_to(self, x1, y1, x2, y2, x3, y3, xcut):
+        points = [(float(self.x), float(self.y)), (float(x1), float(y1)),
+                  (float(x2), float(y2)), (float(x3), float(y3))]
+        nTimes = 1000
+        xs, ys = bezier_curve(points, nTimes)
+        t = next(t for t, x in enumerate(xs) if x >= xcut)
+        partial_points = bezier(points, t / (nTimes - 1))
+        (x12, y12), (x123, y123), (x1234, y1234) = partial_points[1:]
+        self.curve_to(x12, y12, x123, y123, Decimal(x1234), Decimal(y1234))
 
     def curve_wave_to(self, x, y):
         dx = x - self.x
@@ -129,28 +143,84 @@ class Artist(object):
         self.curve_to(x1, y1, x2, y2, x3, y3)
         self.line_to(self.x + dx / 12, self.y + dx / 12)
 
-    def waves_to(self, x, y, dx):
+    def partial_curve_wave_to(self, x, xcut, y):
+        dx = x - self.x
+        x0 = self.x + dx / 12
+        y0 = self.y - dx / 12
+        if xcut < x0:
+            # print('partial_curve_wave_to: partial first line',
+            #       file=sys.stderr)
+            self.line_to(xcut, self.y - (xcut - self.x))
+            return
+        x1 = self.x + dx / 6
+        y1 = self.y - dx / 6
+        x2 = self.x + dx / 3
+        y2 = self.y - dx / 3
+        x3 = self.x + dx / 2
+        y3 = y2
+        self.line_to(x0, y0)
+        if xcut <= x0:
+            # print('partial_curve_wave_to: complete first line',
+            #       file=sys.stderr)
+            return
+        if xcut < x3:
+            # print('partial_curve_wave_to: partial first curve %s/%s/%s' %
+            #       (self.x, xcut, x3),
+            #       file=sys.stderr)
+            self.partial_curve_to(x1, y1, x2, y2, x3, y3, xcut)
+            return
+        self.curve_to(x1, y1, x2, y2, x3, y3)
+        if xcut <= x3:
+            # print('partial_curve_wave_to: complete first curve',
+            #       file=sys.stderr)
+            return
+        x1 = self.x + dx / 6
+        y1 = self.y
+        x2 = self.x + dx / 3
+        y2 = self.y + dx / 6
+        x3 = self.x + 5 * dx / 12
+        y3 = self.y + dx / 4
+        if xcut < x3:
+            # print('partial_curve_wave_to: partial second curve',
+            #       file=sys.stderr)
+            self.partial_curve_to(x1, y1, x2, y2, x3, y3, xcut)
+            return
+        self.curve_to(x1, y1, x2, y2, x3, y3)
+        if xcut <= x3:
+            # print('partial_curve_wave_to: complete second curve',
+            #       file=sys.stderr)
+            return
+        if xcut < self.x + dx / 12:
+            # print('partial_curve_wave_to: partial second line',
+            #       file=sys.stderr)
+            self.line_to(xcut, self.y + (xcut - self.x))
+            return
+        self.line_to(self.x + dx / 12, self.y + dx / 12)
+
+    def spline_waves_to(self, x, y, dx):
         while self.x < x:
-            self.wave_to(self.x + dx, self.y)
+            self.spline_wave_to(self.x + dx, self.y)
         self.line_to(x, y)
 
     def curve_waves_to(self, x, y, dx):
-        while self.x < x:
+        while self.x + dx <= x:
             self.curve_wave_to(self.x + dx, self.y)
+        if self.x < x:
+            self.partial_curve_wave_to(self.x + dx, x, self.y)
         self.line_to(x, y)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-s', '--scale', type=Decimal, default=Decimal('2'))
-    parser.add_argument('-c', '--use-curves', action='store_true')
+    parser.add_argument('-p', '--use-splines', action='store_true')
     parser.add_argument('-t', '--test', action='store_true')
     args = parser.parse_args()
 
     if args.test:
         x1 = 0
         y1 = args.scale
-        x2 = args.scale * 3 / 2
+        x2 = args.scale * 27 / 20
         y2 = args.scale
         m1 = 'm'
     else:
@@ -173,10 +243,10 @@ def main():
         a.move_to(x1, y1)
     else:
         a.line_to(x1, y1)
-    if args.use_curves:
-        a.curve_waves_to(x2, y2, args.scale)
+    if args.use_splines:
+        a.spline_waves_to(x2, y2, args.scale)
     else:
-        a.waves_to(x2, y2, args.scale)
+        a.curve_waves_to(x2, y2, args.scale)
 
 
 if __name__ == "__main__":
